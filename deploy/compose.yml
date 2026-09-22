@@ -1,0 +1,51 @@
+# Own instance of the customers domain and its migration runner.
+# -infra includes this file; nothing here is shared with another domain (own instance, own volume).
+name: opti-customers-db
+
+services:
+  customers-db:
+    image: postgres:16.9-alpine
+    environment:
+      POSTGRES_DB: ${CUSTOMERS_DB_NAME:-customers}
+      POSTGRES_USER: ${CUSTOMERS_DB_USER:-customers_owner}
+      POSTGRES_PASSWORD: ${CUSTOMERS_DB_PASSWORD:?set CUSTOMERS_DB_PASSWORD in .env}
+    volumes:
+      - customers-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - platform
+    expose:
+      - "5432"
+    restart: unless-stopped
+
+  # Migrating is a deliberate act, not something that happens on every restart: profile "tooling".
+  #   docker compose --env-file .env run --rm customers-db-migrate            (apply what is pending)
+  #   docker compose --env-file .env run --rm customers-db-migrate info       (what is applied, what is missing)
+  customers-db-migrate:
+    image: flyway/flyway:11.20.3
+    profiles: ["tooling"]
+    depends_on:
+      customers-db:
+        condition: service_healthy
+    volumes:
+      - ../:/workspace:ro
+    environment:
+      FLYWAY_URL: jdbc:postgresql://customers-db:5432/${CUSTOMERS_DB_NAME:-customers}
+      FLYWAY_USER: ${CUSTOMERS_DB_USER:-customers_owner}
+      FLYWAY_PASSWORD: ${CUSTOMERS_DB_PASSWORD:?set CUSTOMERS_DB_PASSWORD in .env}
+      # "true" only in develop (env/.env.develop.example); qa and main never load demo data
+      FLYWAY_PLACEHOLDERS_SEEDDEMODATA: ${SEED_DEMO_DATA:-false}
+    command: ["-workingDirectory=/workspace", "-configFiles=/workspace/flyway.toml", "migrate"]
+    networks:
+      - platform
+
+networks:
+  platform:
+    external: true
+
+volumes:
+  customers-db-data:
